@@ -8,17 +8,34 @@ Answer each question in 3 to 5 sentences. Be specific and honest about what actu
 - List at least two concrete bugs you noticed at the start  
   (for example: "the hints were backwards").
 
+The first time I ran it, the game looked completely normal — no errors, no red
+tracebacks, nothing in the console at all. That was the confusing part. Every
+bug in this project is a *silent* one: the app runs, the buttons respond, and
+the numbers are simply wrong. I only started making progress once I opened the
+Developer Debug Info panel so I could see the secret number, because then I
+could compare what the game told me against what was actually true.
+
+Two that stood out immediately: the hints were backwards (it told me to guess
+higher when my guess was already too high), and the "New Game" button appeared
+to do nothing — once I won a round, the app stayed stuck on "You already won"
+forever.
+
 **Bug Reproduction Log**
 
-Document at least 3 bugs you found. Add rows as needed.
+| # | Input Used | Expected Behavior | Actual Behavior | Console Error / Output | Suspected Code Location |
+|---|------------|-------------------|-----------------|------------------------|-------------------------|
+| 1 | Secret 42, guess 60 | "Go LOWER!" (guess is too high) | "Go HIGHER!" shown. The two hint messages are swapped. | none | `check_guess`, the return messages for Too High / Too Low |
+| 2 | Secret 42, guess 100 on the first guess, or any even-numbered attempt | Outcome "Too High" | Outcome comes out "Too Low". On even attempts the secret is cast to a string, so `"100" > "42"` is `False` (string comparison). | none — the `TypeError` is caught silently by the `except` in `check_guess` | `app.py` submit block (`secret = str(...)` when `attempts % 2 == 0`), plus the `except TypeError` fallback in `check_guess` |
+| 3 | Win or lose a game, then click New Game | Fresh game, playable | Still shows "You already won" or "Game over" and stops. Score and history also carry over. | none | `app.py` `if new_game:` block (doesn't reset status, score, history) |
+| 4 | Set difficulty to Easy (1–20), click New Game | Secret between 1 and 20 | Secret is drawn from 1–100 | none | `app.py` `if new_game:` uses `random.randint(1, 100)` instead of `low, high` |
+| 5 | Load the game on Normal (limit 8) | "Attempts left: 8" | Shows 7 before the first guess. The counter starts at 1, and New Game resets it to 0, so the two are inconsistent. | none | `app.py` `st.session_state.attempts = 1` and the `attempt_limit - attempts` display |
+| 6 | Pick Easy, look at the info box | "Guess a number between 1 and 20" | Always says "between 1 and 100" | none | `app.py` `st.info(...)` (hardcoded text) |
+| 7 | Hard difficulty | Harder than Normal | Hard is 1–50, which is *easier* than Normal's 1–100 | none | `get_range_for_difficulty` |
+| 8 | Wrong guess on an even attempt with "Too High" | Score goes down or stays flat | Score goes **up** by 5 | none | `update_score`, the `attempt_number % 2` branch |
 
-| Input | Expected Behavior | Actual Behavior | Console Output / Error |
-|-------|-------------------|-----------------|------------------------|
-|  70   |     go Lower             go higher         app.py , check_guess
-| new   |   a new game starts| Does nothing   | app.py if new_game: block
-game 
-| hard  | games get harder.  | gets easier   |get_range_for_difficulty
-mode  
+The thing I'd underline about this table: the "Console Error / Output" column is
+empty for all eight bugs. Nothing ever crashed. I had to find every one of these
+by comparing expected behavior to actual behavior by hand.
 
 ---
 
@@ -149,11 +166,66 @@ dict is correct, but only the live app confirms Streamlit picks it up on rerun.
 
 - How would you explain Streamlit "reruns" and session state to a friend who has never used Streamlit?
 
+I'd say: a Streamlit script is not like a normal program that starts up once and
+then sits there waiting. Every single time you touch anything — click a button,
+type in a box, change a dropdown — Streamlit throws away what it was doing and
+runs your whole file again, top to bottom, as if you had just launched it. The
+page you're looking at is the output of the most recent run, not a thing that's
+being edited in place.
+
+That's a problem, because a game needs to remember the secret number between
+clicks, and a variable created at the top of the script gets recreated from
+scratch on every rerun. `st.session_state` is the fix: it's a dictionary that
+survives reruns. Anything you want the app to remember — the secret, the score,
+the attempt count — has to live in there instead of in a normal variable. That's
+also why the code is full of `if "secret" not in st.session_state:` guards; they
+mean "only set this up on the very first run, don't wipe it every time the user
+clicks."
+
+Bug #3 was the clearest lesson in this for me. The New Game button reset
+`attempts` and `secret` but left `status`, `score`, and `history` sitting in
+session state. Since those survived the rerun, the script ran again, read
+`status == "won"`, hit the guard that shows "You already won," and called
+`st.stop()` — which kills the rest of the script before anything else can draw.
+Nothing had "failed"; the app was faithfully remembering something I wanted it
+to forget. The mental model I landed on: session state is the only thing that
+persists, so a reset button has to clear *everything* it owns, not just the
+parts you happen to be thinking about. That's why I moved the reset into one
+`initial_game_state()` function used by both startup and the button — so there's
+only one list of what a fresh game means.
+
 ---
 
 ## 5. Looking ahead: your developer habits
 
-- What is one habit or strategy from this project that you want to reuse in future labs or projects?
-  - This could be a testing habit, a prompting strategy, or a way you used Git.
-- What is one thing you would do differently next time you work with AI on a coding task?
-- In one or two sentences, describe how this project changed the way you think about AI generated code.
+**One habit I want to reuse: break the fix to prove the test works.**
+
+After writing a test that passed, I went back and deliberately re-introduced the
+bug to watch the test fail, then reverted. It takes about thirty seconds and it
+answers a question a passing test can't: is this test actually looking at the
+thing I fixed? In this project that mattered — the three starter tests passed
+happily while bug #1 was live, because they checked the outcome label and
+ignored the hint message. A green suite told me nothing. If I'd only checked
+that tests pass, I'd have shipped with a test suite that was decorative.
+
+**What I'd do differently: name the function and the behavior in the prompt.**
+
+My vague early prompts invited the AI to invent scope — at one point it offered
+to add a whole new unlimited-guesses mode when I'd asked it to fix a bug.
+Prompts like "fix the high/low messages in `check_guess`, don't change anything
+else" got me tight diffs I could actually review. I'd also start each bug in a
+fresh chat sooner than I did; a long thread carrying three bugs at once made the
+AI keep re-suggesting things I'd already turned down.
+
+**How this changed how I think about AI-generated code.**
+
+Before this, my mental test for AI code was "does it run?" This entire app runs
+perfectly and is wrong in eight different places — not one console error across
+all of them. That reframed it for me: AI-generated code fails *plausibly*. It
+produces code that looks like what a working solution looks like, which is a
+much harder failure mode to spot than a crash, because there's no stack trace
+pointing at the line. The `except TypeError` block in `check_guess` was the
+thing that really landed it — an error handler that silently swallows a real
+type mismatch and returns a confidently wrong answer instead. Going forward I
+treat "it ran without errors" as the beginning of checking AI code, not the end,
+and I want a test that fails for the right reason before I believe a fix.
